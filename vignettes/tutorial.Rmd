@@ -1,0 +1,239 @@
+---
+title: "Tutorial and PCI example"
+author: "Institut für Qualitätssicherung und Transparenz im Gesundheitswesen (IQTIG)"
+date: "`r Sys.Date()`"
+output: rmarkdown::pdf_document
+bibliography: references.bib
+vignette: >
+  %\VignetteIndexEntry{Tutorial and PCI example}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+library(dplyr)
+
+```
+
+# Introduction
+
+This R-package provides an implementation of the statistical methodology for analysing patient survey data as part of quality assurance processes in healthcare. R-functions are provided to obtain point estimate and uncertainty intervals for patient survey based quality indicators (QI). This vignette shows how to use these functions together with an associated `data.frame` to compute two exemplary QIs from the qualitiy assurance domain 'percutaneous coronary interventions and coronary angiography' (PCI). The R package is part of the methodological transparency efforts of the IQTIG and accompanies the detailed statistical description in @pci_bericht_2018.
+
+```{r load pkg}
+library(iqtigprm)
+```
+
+# The Function theta_bayes()
+
+First, we take a look at the core function for evaluating survey data in a Bayesian framework as proposed by the IQTIG methodology. Within the package the most basic buildung block is a  function named `theta_bayes`. The function `theta_bayes` computes the posterior distribution for an underlying parameter $\theta$ with respect to one quality attribute (in German: 'Merkmal'), given the patient answers $y_j$ regarding the survey items associated with that Merkmal.
+
+## Theoretical Background
+
+Suppose, we are interested in a Merkmal consisting of $L$ items within the survey. Each of those items consists of $K$ categories $\{1, \ldots, K\}$ ranging from "very poor" to "very good". 
+
+Given the underlying competence parameter $\theta$, the likelihood that a patient response $y$ takes one of the $K$ answer categories is modeled through a binomial distribution, i.e. 
+$$L(y = k | \theta) = \mathbb{P}_\texttt{Bin}(x = k-1|\theta, K-1) = \binom{k-1}{K-1}\theta^{k-1} (1-\theta)^{(K-1) - (k-1)},$$
+where $\mathbb{P}_\texttt{Bin}$ denotes the probability mass function (PMF) of the binomial distribution and $k$ can take any of the category values in $\{1, \ldots, K\}$. This likelihood function is referred to as the Hardy-Weinberg binomial model. The intuition behind this model is, that each stepwise improvement in answer category occurs according to a Bernoulli trial with probability $\theta$. With overall $K$ categories, there are at most $K-1$ stepwise category improvements possible. Thus, the patient answer is subject to a Binomial distribution with $K-1$ trials and a probability parameter of $\theta$. For instance, if a patient responds with the third category out of four, the corresponding binomial result is two successes (two categories above the lowest category) out of three trials (at most three category improvements are possible). 
+
+The overall likelihood with respect to all patient answers to all considered items is computed by multiplication of the single likelihoods (assuming conditional independence). Conveniently, this again yields a binomial likelihood (up to proportionality) with probability parameter $\theta$. The overall number of trials is given through the product of the number of patients $J$ times the number of items times the number of categories minus 1, i.e. $J \times L \times (K-1)$. The overall number of successes is given by the sum of the single successes, i.e. let
+$$ \bar{y} = \sum_{j = 1}^J \sum_{l=1}^L \sum_{k=1}^K (k-1) \times \mathbb{I}(y_{jl}=k),$$
+where $y_{jl}$ refers to the response of the $j$-th patient to the $l$-th item and $\mathbb{I}$ denotes the indicator function. The overall likelihood is then given by
+$$L((y_{jl})_{j=1,\ldots,J \,l=1,\ldots,L}| \theta) = \mathbb{P}_\texttt{Bin}(x = \bar{y}|\theta, J\times L \times (K-1)).$$
+This likelihood function is embedded in an Bayesian framework to infer the competence parameter $\theta$, which assumes a beta-distribution for $\theta$ since the beta-distribution is the conjugate prior to the binomial likelihood. Thus, the IQTIG methodology assumes a beta($a,b$)-distribution with parameter $a=b=\frac{1}{2}$ as prior for $\theta$, which represents the non-informative Jeffreys prior within this model. Subject to the binomial likelihood, this yields a beta($a^*,b^*$)-distribution as posterior for $\theta$, where the parameters $a^*,b^*$ are given by
+$$a^* = a + \bar{y} \quad \text{and} \quad b^* = b + (J\times L \times (K-1) - \bar{y}).$$
+Thus, the parameters $a^*,b^*$ are updated from the beta-prior parameters ($a,b$) by adding the number of successes $\bar{y}$ and the number of misses $J \times L \times (K-1) - \bar{y}$ within the binomial likelihood, respectively.
+
+## The Function theta_bayes() in Practice
+
+In order to illustrate the mechanics of `theta_bayes` we first simulate some survey data for one fictional Merkmal and one evaluation unit, e.g. one hospital (in German: 'Leistungserbringer'). We assume one associated item ($L=1$) with $K=4$ answer categories and that overall $J = 20$ patients of the unit provided survey responses. We also assume, that the unit has an underlying competence parameter $\theta = 0.6$. 
+
+Given the number of categories $K$, we define the possible category values. As notational convention, the function `theta_bayes` as well as the package overall works with response category values on the $[0,1]$-scale. Thus, the package assumes that the values of an item with $K$ categories are mapped to the $K$ real values $\{0, \frac{1}{K-1}, \ldots, \frac{K-2}{K-1}, 1\}$, rounded to two digits, which yields an equidistant mapping (aside from rounding) of the possible categories to the point scale $[0,1]$. Hence, the values of "0" and "1" would refer to "very poor" and "very good", respectively. For instance, the answers for an item with four categories would be mapped to the point values $\{0, 0.33, 0.67, 1\}$.
+
+```{r}
+## set merkmal specifications
+L <- 1
+K <- 4
+
+## set LE specification
+J <- 20
+theta <- 0.6
+
+## define categories
+categories <- round(seq(0, 100, length.out = K) / 100, 2)
+categories
+```
+
+Subject to $\theta$ the binomial model yields the probabilities for the different patient answers categories. Given these probabilities we sample answers for the $J*L$ patients and items. 
+
+```{r}
+## simulate data for the LE
+### category probabilities subject to theta
+probs_cat <- dbinom(x = seq(0, K-1), size = K-1, prob = theta)
+probs_cat
+### sample patient answers
+set.seed(10000)
+y <- sample(categories, prob = probs_cat, size = J * L, replace = TRUE)
+table(y)
+```
+
+The vector of patient answers `y` serves as data input for the function `theta_bayes`. Additionally required arguments are the number of distinct item categories `nClass`, the assumed beta prior parameters `a` and `b`, as well as the the confidence level `conf_level` which is required for computation of the corresponding credibility interval subject to the resulting posterior for $\theta$. 
+
+```{r}
+## infer theta from patient answers y according to Bayesian methodology
+theta_bayes(y, nClass = K, a = 0.5, b = 0.5, conf_level = 0.95)
+```
+
+As output the function `theta_bayes` provides a list containing the prior parameters `a` and `b` together with the updated posterior parameters `astar` and `bstar` of the beta posterior. Additionally the output contains the corresponding posterior mean and the credibility interval subject to the provided confidence level. As validation we once manually compute the posterior parameters from `y` as follows.
+
+```{r}
+## manual computation
+y_bar <- sum(seq(0, K-1)[sapply(y, function(x) which(categories == x))])
+y_bar
+
+# astar:
+0.5 + y_bar
+
+# bstar:
+0.5 + J*L*(K-1) - y_bar
+```
+
+
+# The package in practice: Example from PCI
+
+In the following we illustrate, how the package can be utilized to compute quality indicator results based on patient survey data and formal indicator specifications.
+
+To do so the package provides an artificial survey data set and a subset of indicator specifications from the quality assurance domain PCI. We show the full work flow from data processing to results computation.
+
+## Data preprocessing
+
+The package contains an artificial data set consisting of survey `r nrow(raw_data_pci)` patients from two LEs ('Leistungserbringer', i.e. 'hospital'). We take a look at that data. 
+
+```{r}
+iqtigprm::raw_data_pci %>% glimpse()
+```
+
+The raw survey data contains information on questionnaire answers from the surveyed patients. Each patient represents one row in the data set. It contains a data entry `ID`, the ID of the Leistungserbringer `ID_LE`, some patient characteristics such as birth date `Gebdatum` and sex `Geschlecht` and all survey answers, e.g. the answers to the questionnaire items^[To enable a better understanding the items were translated for this tutorial. However, there is no validated translation of the questionnaire.] `ARermutigtn` ("Doctors encouraged me to ask questions during a consultation.") or `ARernstn` ("My concerns were taken seriously.").  Note that this sample data contains only a small subset of the items addressed within the full PCI-questionnaire as it is only for illustration purposes.
+
+The survey answers are coded through the patient selected category mapped on point values from 0 to 100. This is the desired $[0,1]$-scale multiplied by 100 (re-scaling into $[0,1]$ happens within the evaluation at a later step). Answers may also be missing, i.e. `NA`, if the patient did not select any answer. Answers may also take certain special values, e.g. the item `ARernstn` can take the value `-99` which means that the patient actively made 'no statement' on this item by selecting the corresponding option. As a general rule, negative values represent non-informative answers that cannot be used for further evaluation. To obtain an overview on a specific item, its survey question and answer possibilities, one can refer to the data documentation (`?iqtigprm::raw_data_pci`) for an English explanation or just check the attributes of the corresponding data column (descriptions in German).
+
+```{r, results = "as.is"}
+iqtigprm::raw_data_pci %>% pull(ARernstn) %>% attributes
+```
+
+### Value mappings
+
+The first step in data processing includes some cleaning of non-informative values and, if necessary, some remapping of the informative point values. This step requires a prespecified mapping list, which is also contained in the package.
+
+```{r}
+iqtigprm::mappings_pci
+```
+
+This list contains two objects `point_mappings` and `ausweichkategorien`. The object `point_mappings` is itself a list of different mapping rules and which fields they apply to. For instance, the first list object maps the values `25, 50, 75, 100` to themselves, respectively, and applies only to the column `PAvorbeeintrn`. This seems to be needless, but illustrates the possibility to map raw survey data to the desired points on the scale from 0 to 100, e.g. if the original answers in the raw data would be coded as answer values `1` to `4`. 
+
+The second sub-list `ausweichkategorien` defines the non-informative values for each item, which are mapped to `NA`. This is given by a set of lists containing a specific non-informative `value` and the fields (in German: `felder`) for which this definition applies. The mapping is applied by using the function `preprocess_data`.
+
+
+```{r}
+processed_data_pci <- preprocess_data(raw_data = raw_data_pci, mappings = mappings_pci)
+processed_data_pci %>% dplyr::glimpse()
+```
+In the output `processed_data_pci`, the point values between 0 and 100 are left unchanged compared to the raw data whereas all former negative values are set to `NA`.
+
+## QI computation
+
+In order to compute QI results, it requires QI computation specifications on how to evaluate the data. This comes in the form of 1) a quality indicator data base (QIDB) containing such computation rules for each QI and 2) a list of required precomputations, if necessary. In the following it is shown how these objects are incorporated into the whole evaluation work flow.
+
+### Precomputated fields
+
+We start be showing how to apply specific precomputations to a data set. This is different from the previous preprocessing steps, as it takes the survey data set and adds newly computed columns, which can be later used up within the QI computation rules. Thus, these precomputations represent informative extensions to the data instead of only being a formal processing step. The package contains a list of precomputations for the PCI example.
+
+```{r}
+iqtigprm::precomputations_pci
+```
+The object `precomputations_pci` is a named list of several precomputations applied to the data set. Each component itself is also a list, where the name of each list gives the name of the corresponding column added to the data. The component `.$expr` provides the computation rule used to fill the new column. The components `.$prototype` and `.$labels` are additional arguments in order to define the labels of the newly computed column values.
+
+This precomputation list is applied to the data set through the function `apply_precomputations`.
+
+```{r}
+precomputed_data <- apply_precomputations(data = processed_data_pci, 
+                                          precomputations_list = precomputations_pci)
+precomputed_data %>% dplyr::glimpse()
+```
+
+The output `precomputed_data` contains the two new columns `r names(precomputations_pci)`, with values being derived from the computation rules. In particular, the field `fn_QI56100_Index_value` will be used in one of the provided example QIs.
+
+### Setting up Quality Indicators
+
+The package contains a small QIDB `qidb_pci` containing two QIs as they were published^[The QI "56100: Symptomatische Indikation aus Patientensicht bei elektiver PCI" has no reference value according to @pci_bericht_2018. For illustration purposes we add a reference value of 0.95 to the QI 56100 included in the example QIDB provided within this package.] in @pci_bericht_2018. This includes the QIs:
+
+  * 56100: "Symptomatische Indikation aus Patientensicht bei elektiver PCI" (_"Symptomatic Indication from a Patient Perspective for elective PCI"_)
+  * 56105: "Prozessbegleitende Interaktion und Kommunikation der Ärztinnen und Ärzte" (_"Interaction and Communication with Physicians"_)
+  
+The data object `qidb_pci` is a list, where each component represents one QI, respectively. Each QI is a list itself containing the information necessary for computation.
+
+```{r}
+iqtigprm::qidb_pci %>% .[[1]]
+```
+This information includes the name, an id (`.$KN_ID`), specifications regarding the reference value (`.$RefArt` and `.$RefVal` and `.$RefOp`) and specifications on how to evaluate the data. The first one refers to the QI population (`.$GG`) and provides a specification on which cases are included or excluded for evaluation, i.e. only cases that fulfill the provided filter condition are included. The second computation specification is given through `.$Merkmale`, a list of the distinct 'Merkmale' and its associated items to be computed for the QI. Here each QI Merkmal is evaluated according to the Bayesian approach explained in section [The Function theta_bayes()]. The QI displayed here consists of only one Merkmal, which consists of only the binary (precomputed) item `fn_QI56100_Index_value`.
+
+As a necessary step for evaluation, it needs to be defined on which data the QIDB should be evaluated. This is done by the function `connect_qidb2data`, which produces output that serves as input for the eventual evaluation function. The function `connect_qidb2data` not only binds the data to each QI, but also performs some preparations. For instance, it reduces the attached data to the relevant columns and patients for each QI, and also extracts some item information from the data and counts Merkmale and associated items and item levels for the QI.   
+
+```{r}
+qidb_data_pair <- connect_qidb2data(qidb = qidb_pci, data = precomputed_data)
+qidb_data_pair %>%.[[1]]
+```
+
+In particular the object `qidb_data_pair[[1]]$data` is significantly reduced compared to the original data set as it only includes the columns for patient id and meta_unit as well as the column regarding the only QI relevant field `fn_QI56100_Index_value` and only the rows of the `r nrow(qidb_data_pair[[1]]$data)` patients with non-missing values in the QI.
+
+### Evaluation of the quality indicators
+
+The `qidb_data_pair` is now ready to use for evaluation of the QIs, which is performed by the function `evaluateQI`. This function takes one component of the QIDB and data pair, i.e. one specific pair of QI and attached data, and computes the results for this QI applied to the data. As optional argument the function takes a `meta_unit`, i.e. a specific LE for which QI results should be computed. If a specific `meta_unit` is provided the data will be restricted to patients from that unit. Otherwise all patients within the data will be used to compute overall results.   
+
+Further arguments to the function are the prior parameters `a` and `b` for the Merkmal-specific beta prior distribution which are passed to the function `theta_bayes` that is applied to each Merkmal within `evaluateQI`. The argrument `conf_level` gives the confidence level, i.e. the probability mass of the two-sided credibility interval to compute. The argument `nMC` sets the number of Monte-Carlo-Samples to use for computation of credibility intervals in the case of a QI with more than one Merkmal. (In that case posterior samples for each Merkmal are randomly drawn to generate a sample for the mean of the Merkmal-specific parameters and to compute sampling-basing credibility intervals. However the function `evaluateQI` still produces the same output for each repeated evaluation as it uses a fixed seed set within the function.)
+
+```{r}
+one_QI <- qidb_data_pair[[1]]
+one_LE <- "LE_A"
+LE_result <- evaluateQI(one_QI,
+                        meta_unit = one_LE, 
+                        conf_level = 0.95,
+                        nMC = 1e5, a = 0.5, b = 0.5)
+
+LE_result
+```
+
+The function output `LE_results` contains only the most relevant results, i.e. the posterior mean estimate `.$QI_hat` and its associated credibility interval `.$interval.`, the number `.$J` of patients within the QI and an information whether the LE result is "statistisch auffällig", which means that the credibility interval lies entirely out of the reference domain (given through the reference value and direction, i.e. reference operator, of the QI).
+
+In order to compute the whole QIDB for the data, one can use `compute_results`, which just takes the `qidb_data_pair` as input and applies `evaluateQI` to all QIs in the QIDB and all meta_units in the data. The other arguments `conf_level`, `a`, `b` and `nMC` are as described above.
+
+```{r}
+full_results <- compute_results(qidb_data_pair, 
+                                conf_level = 0.95, 
+                                a = 0.5, b = 0.5, nMC = 1e5)
+full_results
+```
+
+This yields a data.frame output, where each row represents the output of one QI evaluation for one meta_unit, respectively. The QI and meta_unit are recorded within the first two columns `KN_ID` and `meta_unit`, followed by the associated results and finally some further information to the reference domain, given through `RefOP` and `RefVal`. In this example, the results for the QI `56105`, that does not have a reference value, do not obtain the `Auff_stat` classification. 
+
+The following figure shows these results, i.e. point estimates and uncertainty intervals for each LE on the $[0,1]$-scale as well as a reference value if available (red line), stratified by QI given through the `KN_ID` as displayed above each plot.  
+
+```{r}
+full_results %>% 
+  ggplot2::ggplot() +
+  ggplot2::geom_errorbar(ggplot2::aes(x = meta_unit, ymin = lower, ymax = upper), 
+                width = 0.5, color = "darkgrey") +
+  ggplot2::geom_point(ggplot2::aes(x = meta_unit, y = QI_hat)) +
+  ggplot2::geom_hline(ggplot2::aes(yintercept = RefVal), alpha = 0.2, color = "red") +
+  ggplot2::facet_grid(. ~ KN_ID) +
+  ggplot2::coord_cartesian(ylim = c(0,1)) +
+  ggplot2::labs(x = "LE", y = "QI result")
+```
+
+It becomes visually apparent, that that the result of `LE_B` for QI 56100 is "statistisch auffällig" as its credibility interval lies entirely below the reference value. In contrast `LE_A` is not classified as "statistisch auffällig" although its point estimate `QI_hat` is below the reference value.  
+
+# References

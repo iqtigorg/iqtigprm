@@ -1,0 +1,30 @@
+Package: iqtigprm
+Type: Package
+Title: Illustration of the IQTIG analysis methodology for patient related measures
+Version: 1.0.0
+Authors@R: c(person("Institut für Qualitätssicherung und Transparenz im Gesundheitswesen (IQTIG)",
+                    role = c("aut", "cph")),
+             person("IQTIG Verfahrenssupport",
+                    email = "verfahrenssupport@iqtig.org", role = "cre"))
+Description: An implementation of IQTIG methodology for processing and analysing patient survey data on hospital and ambulant care.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Depends: 
+    R (>= 2.10)
+RoxygenNote: 7.1.1
+Suggests: 
+    rmarkdown,
+    knitr
+VignetteBuilder: knitr
+Imports: 
+    iqtigfunctions,
+    dplyr,
+    rlang,
+    purrr,
+    fs,
+    tidyselect,
+    withr,
+    haven,
+    ggplot2,
+    labelled
